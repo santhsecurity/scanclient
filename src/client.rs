@@ -146,11 +146,66 @@ impl ScanClient {
     }
 
     /// Perform an asynchronous HEAD request to the specified URL.
+    ///
+    /// HEAD requests are useful for checking resource metadata without
+    /// downloading the full response body.
+    ///
+    /// # Parameters
+    /// - `url`: The target URL to request.
+    ///
+    /// # Returns
+    /// A `ScanResponse` containing the response status and headers.
+    ///
+    /// # Errors
+    /// Returns an error if the request fails or all retry attempts are exhausted.
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// use scanclient::{HttpConfig, ScanClient};
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> scanclient::Result<()> {
+    ///     let client = ScanClient::from_config(HttpConfig::default())?;
+    ///     let response = client.head("https://example.com/resource").await?;
+    ///     println!("Content-Length: {:?}", response.header_value("content-length"));
+    ///     Ok(())
+    /// }
+    /// ```
     pub async fn head(&self, url: &str) -> Result<ScanResponse> {
         self.execute(self.client.head(url)).await
     }
 
     /// Perform an asynchronous POST request with a body payload.
+    ///
+    /// POST requests are typically used to submit data to a server,
+    /// such as form submissions or API requests.
+    ///
+    /// # Parameters
+    /// - `url`: The target URL to send the POST request to.
+    /// - `body`: The request body payload. Can be a string, bytes, or any type
+    ///   implementing `Into<reqwest::Body>`.
+    ///
+    /// # Returns
+    /// A `ScanResponse` containing the server's response.
+    ///
+    /// # Errors
+    /// Returns an error if the request fails or all retry attempts are exhausted.
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// use scanclient::{HttpConfig, ScanClient};
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> scanclient::Result<()> {
+    ///     let client = ScanClient::from_config(HttpConfig::default())?;
+    ///     let response = client.post(
+    ///         "https://api.example.com/data",
+    ///         r#"{"key": "value"}"#
+    ///     ).await?;
+    ///     println!("Status: {}", response.status());
+    ///     Ok(())
+    /// }
+    /// ```
     pub async fn post<B>(&self, url: &str, body: B) -> Result<ScanResponse>
     where
         B: Into<reqwest::Body>,
@@ -159,11 +214,70 @@ impl ScanClient {
     }
 
     /// Create a custom `RequestBuilder` utilizing the internal connection pool.
+    ///
+    /// This method allows building custom HTTP requests with full control over
+    /// headers, query parameters, and body content using reqwest's `RequestBuilder`.
+    ///
+    /// # Parameters
+    /// - `method`: The HTTP method (GET, POST, PUT, DELETE, etc.).
+    /// - `url`: The target URL for the request.
+    ///
+    /// # Returns
+    /// A `reqwest::RequestBuilder` configured with the client's default headers
+    /// and settings.
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// use scanclient::{HttpConfig, ScanClient};
+    /// use reqwest::Method;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> scanclient::Result<()> {
+    ///     let client = ScanClient::from_config(HttpConfig::default())?;
+    ///     let request = client.request(Method::PUT, "https://api.example.com/items/1")
+    ///         .header("Content-Type", "application/json")
+    ///         .body(r#"{"name": "updated"}"#);
+    ///     let response = client.execute(request).await?;
+    ///     println!("Status: {}", response.status());
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn request(&self, method: Method, url: &str) -> RequestBuilder {
         self.client.request(method, url)
     }
 
     /// Execute a constructed request through the retry and rate-limiting pipeline.
+    ///
+    /// This method takes a `RequestBuilder` (created via `request()` or from
+    /// the underlying reqwest client) and executes it with automatic retries
+    /// and rate limiting as configured in `HttpConfig`.
+    ///
+    /// # Parameters
+    /// - `builder`: A `RequestBuilder` configured with the desired request settings.
+    ///
+    /// # Returns
+    /// A `ScanResponse` containing the server's response after any retries.
+    ///
+    /// # Errors
+    /// - `Error::UnclonableRequest` if the request body cannot be cloned for retries.
+    /// - `Error::RetryExhausted` if all retry attempts fail.
+    /// - `Error::Request` for other request failures.
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// use scanclient::{HttpConfig, ScanClient};
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> scanclient::Result<()> {
+    ///     let client = ScanClient::from_config(HttpConfig::default())?;
+    ///     let request = client.request(reqwest::Method::PATCH, "https://api.example.com/items/1")
+    ///         .header("Content-Type", "application/json")
+    ///         .body(r#"{"field": "value"}"#);
+    ///     let response = client.execute(request).await?;
+    ///     println!("Status: {}", response.status());
+    ///     Ok(())
+    /// }
+    /// ```
     pub async fn execute(&self, builder: RequestBuilder) -> Result<ScanResponse> {
         let response = self.execute_raw(builder).await?;
         ScanResponse::from_response(response).await
@@ -640,5 +754,159 @@ mod tests {
             .unwrap();
         assert_eq!(post_resp.status(), reqwest::StatusCode::OK);
         assert_eq!(post_resp.body_text().unwrap(), "ok");
+    }
+
+    #[tokio::test]
+    async fn execute_with_custom_request_builder() {
+        let (address, server) = spawn_test_server(move |_headers| async move {
+            http_response(200, &[("content-length", "6")], b"custom")
+        })
+        .await;
+        tokio::spawn(server);
+
+        let client = ScanClient::from_config(HttpConfig::default()).unwrap();
+        let builder = client.request(Method::GET, &format!("http://{address}/custom"));
+        let response = client.execute(builder).await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(response.body_text().unwrap(), "custom");
+    }
+
+    #[tokio::test]
+    async fn execute_empty_url_fails_gracefully() {
+        let client = ScanClient::from_config(HttpConfig::default()).unwrap();
+        let builder = client.request(Method::GET, "");
+        let result = client.execute(builder).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn invalid_header_value_with_null_byte_is_rejected() {
+        let mut headers = HashMap::new();
+        headers.insert("x-null".to_string(), "bad\0value".to_string());
+        let config = HttpConfig {
+            custom_headers: headers,
+            ..HttpConfig::default()
+        };
+        let result = ScanClient::from_config(config);
+        assert!(matches!(result, Err(Error::InvalidHeaderValue { .. })));
+    }
+
+    #[tokio::test]
+    async fn concurrent_get_requests_share_client() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_server = hits.clone();
+        let (address, server) = spawn_test_server(move |_headers| {
+            let hits_server = hits_server.clone();
+            async move {
+                hits_server.fetch_add(1, Ordering::SeqCst);
+                http_response(200, &[("content-length", "2")], b"ok")
+            }
+        })
+        .await;
+        tokio::spawn(server);
+
+        let client = Arc::new(ScanClient::from_config(HttpConfig::default()).unwrap());
+        let mut handles = Vec::new();
+        for _ in 0..20 {
+            let c = client.clone();
+            let url = format!("http://{address}/parallel");
+            handles.push(tokio::spawn(async move { c.get(&url).await.unwrap().status() }));
+        }
+
+        for handle in handles {
+            assert_eq!(handle.await.unwrap(), reqwest::StatusCode::OK);
+        }
+        assert_eq!(hits.load(Ordering::SeqCst), 20);
+    }
+
+    #[tokio::test]
+    async fn post_huge_body_succeeds() {
+        let (address, server) = spawn_test_server(move |_headers| async move {
+            http_response(200, &[("content-length", "4")], b"huge")
+        })
+        .await;
+        tokio::spawn(server);
+
+        let payload = "A".repeat(2 * 1024 * 1024);
+        let client = ScanClient::from_config(HttpConfig::default()).unwrap();
+        let response = client
+            .post(&format!("http://{address}/upload"), payload)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(response.body_text().unwrap(), "huge");
+    }
+
+    #[tokio::test]
+    async fn post_binary_body_with_null_and_unicode_succeeds() {
+        let (address, server) = spawn_test_server(move |_headers| async move {
+            http_response(200, &[("content-length", "2")], b"ok")
+        })
+        .await;
+        tokio::spawn(server);
+
+        let payload = vec![0x66, 0x6f, 0x6f, 0x00, 0x62, 0x61, 0x72, 0xf0, 0x9f, 0x8e, 0x89];
+        let client = ScanClient::from_config(HttpConfig::default()).unwrap();
+        let response = client
+            .post(&format!("http://{address}/binary"), payload)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn post_non_idempotent_not_retried_by_default() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_server = attempts.clone();
+        let (address, server) = spawn_test_server(move |_| {
+            let attempts_server = attempts_server.clone();
+            async move {
+                attempts_server.fetch_add(1, Ordering::SeqCst);
+                http_response(500, &[("content-length", "5")], b"error")
+            }
+        })
+        .await;
+        tokio::spawn(server);
+
+        let client = ScanClient::from_config(HttpConfig {
+            max_retries: 5,
+            retry_delay_ms: 1,
+            retry_non_idempotent_methods: false,
+            ..HttpConfig::default()
+        })
+        .unwrap();
+        let response = client.post(&format!("http://{address}/"), "data").await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn post_non_idempotent_retried_when_enabled() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_server = attempts.clone();
+        let (address, server) = spawn_test_server(move |_| {
+            let attempts_server = attempts_server.clone();
+            async move {
+                let count = attempts_server.fetch_add(1, Ordering::SeqCst) + 1;
+                if count < 3 {
+                    http_response(500, &[("content-length", "5")], b"error")
+                } else {
+                    http_response(200, &[("content-length", "2")], b"ok")
+                }
+            }
+        })
+        .await;
+        tokio::spawn(server);
+
+        let client = ScanClient::from_config(HttpConfig {
+            max_retries: 4,
+            retry_delay_ms: 1,
+            retry_non_idempotent_methods: true,
+            ..HttpConfig::default()
+        })
+        .unwrap();
+        let response = client.post(&format!("http://{address}/"), "data").await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
     }
 }
