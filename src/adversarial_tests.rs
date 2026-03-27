@@ -296,7 +296,10 @@ fn adversarial_unicode_headers() {
     };
 
     let result = ScanClient::from_config(config);
-    assert!(result.is_ok(), "unicode header values should be accepted by reqwest");
+    assert!(
+        result.is_ok(),
+        "unicode header values should be accepted by reqwest"
+    );
 }
 
 /// Test rate limit edge cases

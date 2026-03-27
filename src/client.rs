@@ -8,7 +8,7 @@ use reqwest::{
     Method, RequestBuilder,
 };
 use thiserror::Error;
-use tokio::{time::sleep};
+use tokio::time::sleep;
 use tower::{
     limit::RateLimitLayer,
     service_fn,
@@ -174,7 +174,8 @@ impl ScanClient {
         let probe = builder.try_clone().ok_or(Error::UnclonableRequest)?;
         let request = probe.build().map_err(Error::Request)?;
         let method = request.method().clone();
-        let retryable_method = self.config.retry_non_idempotent_methods || is_idempotent_method(&method);
+        let retryable_method =
+            self.config.retry_non_idempotent_methods || is_idempotent_method(&method);
 
         let mut attempt = 0;
         loop {
@@ -191,7 +192,9 @@ impl ScanClient {
                 }
                 Ok(response) => return Ok(response),
                 Err(error)
-                    if retryable_method && should_retry_error(&error) && attempt + 1 < max_attempts =>
+                    if retryable_method
+                        && should_retry_error(&error)
+                        && attempt + 1 < max_attempts =>
                 {
                     sleep(backoff_delay(self.config.retry_delay_ms, attempt)).await;
                 }
