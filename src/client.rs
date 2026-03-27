@@ -1,6 +1,6 @@
 //! Scanning HTTP client tuned for security tooling.
 
-use std::{fmt, sync::Arc, time::Duration};
+use std::{fmt, time::Duration};
 
 use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue, USER_AGENT},
@@ -8,7 +8,7 @@ use reqwest::{
     Method, RequestBuilder,
 };
 use thiserror::Error;
-use tokio::{sync::Mutex, time::sleep};
+use tokio::{time::sleep};
 use tower::{
     limit::RateLimitLayer,
     service_fn,
@@ -202,8 +202,8 @@ impl ScanClient {
         };
 
         let mut gate = rate_gate.clone();
-        gate.ready().await.map_err(|e| Error::RateLimiter(e))?;
-        gate.call(()).await.map_err(|e| Error::RateLimiter(e))?;
+        gate.ready().await.map_err(Error::RateLimiter)?;
+        gate.call(()).await.map_err(Error::RateLimiter)?;
         Ok(())
     }
 }
@@ -363,6 +363,7 @@ mod tests {
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
+        sync::Mutex,
     };
 
     use super::*;
