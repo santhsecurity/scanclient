@@ -34,6 +34,7 @@ pub type Result<T> = std::result::Result<T, HttpConfigError>;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 #[serde(deny_unknown_fields)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct HttpConfig {
     /// Request timeout in seconds.
     pub timeout_secs: u64,
@@ -51,6 +52,8 @@ pub struct HttpConfig {
     pub custom_headers: HashMap<String, String>,
     /// Optional absolute hard-limit on requests per second per client instance.
     pub rate_limit_per_sec: Option<u32>,
+    /// Whether retries are allowed for non-idempotent methods such as POST/PUT/PATCH/DELETE.
+    pub retry_non_idempotent_methods: bool,
     /// Whether or not to perform strict TLS certificate validation.
     pub tls_verify: bool,
     /// Explicitly allow invalid TLS certificates.
@@ -72,6 +75,7 @@ impl Default for HttpConfig {
             user_agent: default_user_agent(),
             custom_headers: HashMap::new(),
             rate_limit_per_sec: None,
+            retry_non_idempotent_methods: false,
             tls_verify: true,
             tls_accept_invalid_certs: false,
             tls_accept_invalid_hostnames: false,
@@ -208,6 +212,13 @@ impl HttpConfigBuilder {
         self
     }
 
+    /// Allow retries for non-idempotent methods.
+    #[must_use]
+    pub fn retry_non_idempotent_methods(mut self, value: bool) -> Self {
+        self.0.retry_non_idempotent_methods = value;
+        self
+    }
+
     /// Enable or disable strict TLS verification.
     #[must_use]
     pub fn tls_verify(mut self, value: bool) -> Self {
@@ -245,6 +256,8 @@ impl HttpConfigBuilder {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::uninlined_format_args)]
+
     use super::{HttpConfig, HttpConfigError};
 
     #[test]

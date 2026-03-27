@@ -171,6 +171,10 @@ impl ScanClient {
 
     async fn execute_raw(&self, builder: RequestBuilder) -> Result<reqwest::Response> {
         let max_attempts = self.config.max_retries.saturating_add(1);
+        let probe = builder.try_clone().ok_or(Error::UnclonableRequest)?;
+        let request = probe.build().map_err(Error::Request)?;
+        let method = request.method().clone();
+        let retryable_method = self.config.retry_non_idempotent_methods || is_idempotent_method(&method);
 
         let mut attempt = 0;
         loop {
@@ -179,15 +183,19 @@ impl ScanClient {
             let request = builder.try_clone().ok_or(Error::UnclonableRequest)?;
             match request.send().await {
                 Ok(response)
-                    if should_retry_status(response.status()) && attempt + 1 < max_attempts =>
+                    if retryable_method
+                        && should_retry_status(response.status())
+                        && attempt + 1 < max_attempts =>
                 {
                     sleep(backoff_delay(self.config.retry_delay_ms, attempt)).await;
                 }
                 Ok(response) => return Ok(response),
-                Err(error) if should_retry_error(&error) && attempt + 1 < max_attempts => {
+                Err(error)
+                    if retryable_method && should_retry_error(&error) && attempt + 1 < max_attempts =>
+                {
                     sleep(backoff_delay(self.config.retry_delay_ms, attempt)).await;
                 }
-                Err(error) if should_retry_error(&error) => {
+                Err(error) if retryable_method && should_retry_error(&error) => {
                     return Err(Error::RetryExhausted { source: error });
                 }
                 Err(error) => return Err(Error::Request(error)),
@@ -206,6 +214,13 @@ impl ScanClient {
         gate.call(()).await.map_err(Error::RateLimiter)?;
         Ok(())
     }
+}
+
+fn is_idempotent_method(method: &Method) -> bool {
+    matches!(
+        *method,
+        Method::GET | Method::HEAD | Method::OPTIONS | Method::TRACE | Method::PUT | Method::DELETE
+    )
 }
 
 fn build_client(config: &HttpConfig) -> Result<reqwest::Client> {
@@ -351,6 +366,13 @@ fn backoff_delay(base_ms: u64, attempt: u32) -> Duration {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::manual_let_else,
+        clippy::match_same_arms,
+        clippy::uninlined_format_args,
+        clippy::unreadable_literal
+    )]
+
     use std::{
         collections::HashMap,
         net::SocketAddr,

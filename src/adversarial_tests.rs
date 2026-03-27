@@ -3,6 +3,13 @@
 //! Tests: config with 0 timeout, 100 custom headers, proxy with auth,
 //! TOML with unknown fields, empty user agent
 
+#![allow(
+    clippy::manual_string_new,
+    clippy::match_same_arms,
+    clippy::needless_raw_string_hashes,
+    clippy::uninlined_format_args
+)]
+
 use crate::{client::ScanClient, config::HttpConfig, Error};
 use std::collections::HashMap;
 
