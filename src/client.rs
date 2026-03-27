@@ -86,7 +86,7 @@ pub enum Error {
     Request(#[from] reqwest::Error),
 }
 
-type RateGate = BoxService<(), (), BoxError>;
+type RateGate = tower::buffer::Buffer<BoxService<(), (), BoxError>, ()>;
 
 const MAX_TIMEOUT_SECS: u64 = 86_400;
 const MAX_RETRY_DELAY_MS: u64 = 60_000;
@@ -96,7 +96,7 @@ const MAX_RETRY_DELAY_MS: u64 = 60_000;
 pub struct ScanClient {
     client: reqwest::Client,
     config: HttpConfig,
-    rate_gate: Option<Arc<Mutex<RateGate>>>,
+    rate_gate: Option<RateGate>,
 }
 
 impl fmt::Debug for ScanClient {
@@ -201,9 +201,9 @@ impl ScanClient {
             return Ok(());
         };
 
-        let mut gate = rate_gate.lock().await;
-        gate.ready().await.map_err(Error::RateLimiter)?;
-        gate.call(()).await.map_err(Error::RateLimiter)?;
+        let mut gate = rate_gate.clone();
+        gate.ready().await.map_err(|e| Error::RateLimiter(e))?;
+        gate.call(()).await.map_err(|e| Error::RateLimiter(e))?;
         Ok(())
     }
 }
@@ -311,7 +311,7 @@ fn validate_proxy_url(proxy: &str) -> Result<()> {
     Ok(())
 }
 
-fn build_rate_gate(limit: Option<u32>) -> Result<Option<Arc<Mutex<RateGate>>>> {
+fn build_rate_gate(limit: Option<u32>) -> Result<Option<RateGate>> {
     let Some(limit_val) = limit else {
         return Ok(None);
     };
@@ -330,7 +330,10 @@ fn build_rate_gate(limit: Option<u32>) -> Result<Option<Arc<Mutex<RateGate>>>> {
         ))
         .service(service_fn(|()| async move { Ok::<(), BoxError>(()) }));
 
-    Ok(Some(Arc::new(Mutex::new(BoxService::new(service)))))
+    let boxed = BoxService::new(service);
+    let buffer = tower::buffer::Buffer::new(boxed, per_second as usize * 100);
+
+    Ok(Some(buffer))
 }
 
 fn should_retry_status(status: reqwest::StatusCode) -> bool {
